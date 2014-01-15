@@ -6,6 +6,7 @@ require "language_pack"
 require "language_pack/base"
 require "language_pack/ruby_version"
 require "language_pack/version"
+require "fileutils"
 
 # base Ruby Language Pack. This is for any base ruby app.
 class LanguagePack::Ruby < LanguagePack::Base
@@ -584,7 +585,7 @@ ERROR
 
   def copy_example_db
     log("Copying database.example.yml to database.yml") do
-      File.copy('config/database.example.yml', 'config/database.yml')
+      FileUtils.copy('config/database.example.yml', 'config/database.yml')
     end
   end
 
