@@ -116,6 +116,7 @@ class LanguagePack::Ruby < LanguagePack::Base
       allow_git do
         install_language_pack_gems
         build_bundler
+        copy_example_db
         install_binaries
         run_assets_precompile_rake_task
       end
@@ -578,6 +579,12 @@ ERROR
       else
         ""
       end
+    end
+  end
+
+  def copy_example_db
+    log("Copying database.example.yml to database.yml") do
+      File.copy('config/database.example.yml', 'config/database.yml')
     end
   end
 
