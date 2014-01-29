@@ -138,7 +138,7 @@ namespace :buildpack do
       git     = Git.open(".")
       stashes = nil
 
-      if git.status.changed
+      if git.status.changed.any?
         stashes = Git::Stashes.new(git)
         stashes.save("WIP")
       end
@@ -160,6 +160,8 @@ FILE
       git.commit "bump to #{new_version}"
 
       stashes.pop if stashes
+
+      puts "Bumped to #{new_version}"
     else
       puts "Already on #{new_version}"
     end
@@ -236,9 +238,16 @@ FILE
 
   desc "tag a release"
   task :tag do
+    tagged_version =
+      if @new_version.nil?
+        "v#{latest_release["id"]}"
+      else
+        new_version
+      end
+
     git = Git.open(".")
-    git.add_tag(new_version)
-    puts "Created tag #{new_version}"
+    git.add_tag(tagged_version)
+    puts "Created tag #{tagged_version}"
 
     remote = git.remotes.detect {|remote| remote.url.match(%r{heroku/heroku-buildpack-ruby.git$}) }
     puts "Pushing tag to remote #{remote}"
