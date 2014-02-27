@@ -33,10 +33,18 @@ class LanguagePack::Helpers::RakeRunner
     end
 
     def invoke(options = {})
-      options = @default_options.merge(options)
-      puts "Running: rake #{task}"
+      options      = @default_options.merge(options)
+      quiet_option = options.delete(:quiet)
+
+      puts "Running: rake #{task}" unless quiet_option
       time = Benchmark.realtime do
-        self.output = pipe("rake #{task}", options)
+        cmd = "rake #{task}"
+
+        if quiet_option
+          self.output = run("rake #{task}", options)
+        else
+          self.output = pipe("rake #{task}", options)
+        end
       end
       self.time = time
 
@@ -51,9 +59,7 @@ class LanguagePack::Helpers::RakeRunner
 
   def initialize(has_rake_gem = true)
     @has_rake = has_rake_gem && has_rakefile?
-    if @has_rake
-      load_rake_tasks
-    else
+    if !@has_rake
       @rake_tasks    = ""
       @rakefile_can_load = false
     end
@@ -71,16 +77,16 @@ class LanguagePack::Helpers::RakeRunner
     LanguagePack::Instrument.instrument(*args, &block)
   end
 
-  def load_rake_tasks
+  def load_rake_tasks(options = {})
     instrument "ruby.rake_task_defined" do
-      @rake_tasks        ||= run("bundle exec rake -P --trace", user_env: true)
+      @rake_tasks        ||= RakeTask.new("-P --trace").invoke(options.merge(quiet: true)).output
       @rakefile_can_load ||= $?.success?
       @rake_tasks
     end
   end
 
-  def load_rake_tasks!
-    out =  load_rake_tasks
+  def load_rake_tasks!(options = {})
+    out =  load_rake_tasks(options)
     msg =  "Could not detect rake tasks\n"
     msg << "ensure you can run `$ bundle exec rake -P` against your app with no environment variables present\n"
     msg << "and using the production group of your Gemfile.\n"

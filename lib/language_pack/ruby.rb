@@ -11,7 +11,7 @@ require "fileutils"
 # base Ruby Language Pack. This is for any base ruby app.
 class LanguagePack::Ruby < LanguagePack::Base
   NAME                 = "ruby"
-  LIBYAML_VERSION      = "0.1.4"
+  LIBYAML_VERSION      = "0.1.5"
   LIBYAML_PATH         = "libyaml-#{LIBYAML_VERSION}"
   BUNDLER_VERSION      = "1.5.2"
   BUNDLER_GEM_PATH     = "bundler-#{BUNDLER_VERSION}"
@@ -59,8 +59,6 @@ class LanguagePack::Ruby < LanguagePack::Base
     instrument "ruby.default_config_vars" do
       vars = {
         "LANG"     => "en_US.UTF-8",
-        "PATH"     => default_path,
-        "GEM_PATH" => slug_vendor_base,
       }
 
       ruby_version.jruby? ? vars.merge({
@@ -106,7 +104,31 @@ private
   # the base PATH environment variable to be used
   # @return [String] the resulting PATH
   def default_path
-    "bin:#{bundler_binstubs_path}:/usr/local/bin:/usr/bin:/bin"
+    # need to remove bin/ folder since it links
+    # to the wrong --prefix ruby binstubs
+    # breaking require. This only applies to Ruby 1.9.2 and 1.8.7.
+    safe_binstubs = binstubs_relative_paths - ["bin"]
+    paths         = [
+      ENV["PATH"],
+      "bin",
+      system_paths,
+    ]
+    paths.unshift("#{slug_vendor_jvm}/bin") if ruby_version.jruby?
+    paths.unshift(safe_binstubs)
+
+    paths.join(":")
+  end
+
+  def binstubs_relative_paths
+    [
+      "bin",
+      bundler_binstubs_path,
+      "#{slug_vendor_base}/bin"
+    ]
+  end
+
+  def system_paths
+    "/usr/local/bin:/usr/bin:/bin"
   end
 
   # the relative path to the bundler directory of gems
@@ -120,6 +142,7 @@ private
       else
         @slug_vendor_base = run_no_pipe(%q(ruby -e "require 'rbconfig';puts \"vendor/bundle/#{RUBY_ENGINE}/#{RbConfig::CONFIG['ruby_version']}\"")).chomp
         error "Problem detecting bundler vendor directory: #{@slug_vendor_base}" unless $?.success?
+        @slug_vendor_base
       end
     end
   end
@@ -198,12 +221,15 @@ private
     instrument 'ruby.setup_language_pack_environment' do
       setup_ruby_install_env
 
+      # TODO when buildpack-env-args rolls out, we can get rid of
+      # ||= and the manual setting below
       config_vars = default_config_vars.each do |key, value|
         ENV[key] ||= value
       end
-      ENV["GEM_HOME"] = slug_vendor_base
+
       ENV["GEM_PATH"] = slug_vendor_base
-      ENV["PATH"]     = "#{ruby_install_binstub_path}:#{slug_vendor_base}/bin:#{config_vars["PATH"]}"
+      ENV["GEM_HOME"] = slug_vendor_base
+      ENV["PATH"]     = default_path
     end
   end
 
@@ -212,7 +238,7 @@ private
     instrument 'setup_profiled' do
       set_env_override "GEM_PATH", "$HOME/#{slug_vendor_base}:$GEM_PATH"
       set_env_default  "LANG",     "en_US.UTF-8"
-      set_env_override "PATH",     "$HOME/bin:$HOME/#{slug_vendor_base}/bin:$HOME/#{bundler_binstubs_path}:$PATH"
+      set_env_override "PATH",     binstubs_relative_paths.map {|path| "$HOME/#{path}" }.join(":") + ":$PATH"
 
       if ruby_version.jruby?
         set_env_default "JAVA_OPTS", default_java_opts
@@ -446,7 +472,7 @@ WARNING
   def build_bundler
     instrument 'ruby.build_bundler' do
       log("bundle") do
-        bundle_without = ENV["BUNDLE_WITHOUT"] || "development:test"
+        bundle_without = env("BUNDLE_WITHOUT") || "development:test"
         bundle_bin     = "bundle"
         bundle_command = "#{bundle_bin} install --without #{bundle_without} --path vendor/bundle --binstubs #{bundler_binstubs_path}"
         bundle_command << " -j4"
@@ -478,26 +504,26 @@ WARNING
           install_libyaml(libyaml_dir)
 
           # need to setup compile environment for the psych gem
-          yaml_include   = File.expand_path("#{libyaml_dir}/include")
-          yaml_lib       = File.expand_path("#{libyaml_dir}/lib")
-          pwd            = run("pwd").chomp
+          yaml_include   = File.expand_path("#{libyaml_dir}/include").shellescape
+          yaml_lib       = File.expand_path("#{libyaml_dir}/lib").shellescape
+          pwd            = Dir.pwd
           bundler_path   = "#{pwd}/#{slug_vendor_base}/gems/#{BUNDLER_GEM_PATH}/lib"
           # we need to set BUNDLE_CONFIG and BUNDLE_GEMFILE for
           # codon since it uses bundler.
           env_vars       = {
             "BUNDLE_GEMFILE"                => "#{pwd}/Gemfile",
             "BUNDLE_CONFIG"                 => "#{pwd}/.bundle/config",
-            "CPATH"                         => "#{yaml_include}:$CPATH",
-            "CPPATH"                        => "#{yaml_include}:$CPPATH",
-            "LIBRARY_PATH"                  => "#{yaml_lib}:$LIBRARY_PATH",
-            "RUBYOPT"                       => "\"#{syck_hack}\"",
+            "CPATH"                         => noshellescape("#{yaml_include}:$CPATH"),
+            "CPPATH"                        => noshellescape("#{yaml_include}:$CPPATH"),
+            "LIBRARY_PATH"                  => noshellescape("#{yaml_lib}:$LIBRARY_PATH"),
+            "RUBYOPT"                       => syck_hack,
             "NOKOGIRI_USE_SYSTEM_LIBRARIES" => "true"
           }
           env_vars["BUNDLER_LIB_PATH"] = "#{bundler_path}" if ruby_version.ruby_version == "1.8.7"
           puts "Running: #{bundle_command}"
           instrument "ruby.bundle_install" do
             bundle_time = Benchmark.realtime do
-              bundler_output << pipe("#{bundle_command} --no-clean 2>&1", env: env_vars, user_env: true)
+              bundler_output << pipe("#{bundle_command} --no-clean", out: "2>&1", env: env_vars, user_env: true)
             end
           end
         end
@@ -511,7 +537,7 @@ WARNING
             if load_default_cache?
               run "bundle clean > /dev/null"
             else
-              pipe "#{bundle_bin} clean 2> /dev/null"
+              pipe("#{bundle_bin} clean", out: "2> /dev/null")
             end
           end
           cache.store ".bundle"
@@ -627,9 +653,23 @@ params = CGI.parse(uri.query || "")
   end
 
   def rake
-    @rake ||= LanguagePack::Helpers::RakeRunner.new(
+    @rake ||= begin
+      LanguagePack::Helpers::RakeRunner.new(
                 bundler.has_gem?("rake") || ruby_version.rake_is_vendored?
-              ).load_rake_tasks!
+              ).load_rake_tasks!(env: rake_env)
+    end
+  end
+
+  def rake_env
+    if database_url
+      { "DATABASE_URL" => database_url }
+    else
+      {}
+    end.merge(user_env_hash)
+  end
+
+  def database_url
+    env("DATABASE_URL") if env("DATABASE_URL")
   end
 
   # executes the block with GIT_DIR environment variable removed since it can mess with the current working directory git thinks it's in
@@ -660,7 +700,7 @@ params = CGI.parse(uri.query || "")
       return true unless precompile.is_defined?
 
       topic "Running: rake assets:precompile"
-      precompile.invoke
+      precompile.invoke(env: rake_env)
       if precompile.success?
         puts "Asset precompilation completed (#{"%.2f" % precompile.time}s)"
       else
@@ -729,6 +769,13 @@ params = CGI.parse(uri.query || "")
         purge_bundler_cache
       end
 
+      # recompile nokogiri to use new libyaml
+      if @metadata.exists?(buildpack_version_cache) && (bv = @metadata.read(buildpack_version_cache).sub('v', '').to_i) && bv != 0 && bv <= 99 && bundler.has_gem?("psych")
+        puts "Need to recompile psych for CVE-2013-6393. Clearing bundler cache."
+        puts "See http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=737076."
+        purge_bundler_cache
+      end
+
       FileUtils.mkdir_p(heroku_metadata)
       @metadata.write(ruby_version_cache, full_ruby_version, false)
       @metadata.write(buildpack_version_cache, BUILDPACK_VERSION, false)
@@ -743,7 +790,7 @@ params = CGI.parse(uri.query || "")
       FileUtils.rm_rf(bundler_cache)
       cache.clear bundler_cache
       # need to reinstall language pack gems
-      install_language_pack_gems
+      install_bundler_in_app
     end
   end
 end
