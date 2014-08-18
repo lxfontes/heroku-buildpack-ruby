@@ -82,6 +82,7 @@ WARNING
         @cache.load public_assets_folder
         @cache.load default_assets_cache
 
+        puts "ENV #{ENV.inspect}"
         precompile.invoke(env: rake_env)
 
         if precompile.success?
