@@ -682,7 +682,7 @@ params = CGI.parse(uri.query || "")
       { "DATABASE_URL" => database_url }
     else
       {}
-    end.merge(user_env_hash)
+    end..merge(ENV).merge(user_env_hash)
   end
 
   def database_url
